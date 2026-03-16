@@ -1,7 +1,5 @@
-# Ashutosh Reddy Atimyala — Sci-Fi Cinematic Portfolio
+# Ashutosh Reddy Atimyala
 
-## Usage
-Open `index.html` in any modern browser. No build step required.
 
 ## Structure
 ```
@@ -13,6 +11,3 @@ portfolio/
     ├── js/main.js
     └── img/profile.jpg
 ```
-
-## Deploy
-Drag the folder to netlify.com/drop for an instant live URL.
