@@ -1,258 +1,265 @@
-/* ═══════════════════════════════════════════
-   CURSOR
-═══════════════════════════════════════════ */
-const CUR=document.getElementById('CUR'), CURR=document.getElementById('CUR_R');
-let mx=0,my=0,rx=0,ry=0;
-document.addEventListener('mousemove',e=>{
-  mx=e.clientX;my=e.clientY;
-  CUR.style.left=mx+'px';CUR.style.top=my+'px';
-});
-(function trail(){
-  rx+=(mx-rx)*.1;ry+=(my-ry)*.1;
-  CURR.style.left=rx+'px';CURR.style.top=ry+'px';
-  requestAnimationFrame(trail);
-})();
-document.querySelectorAll('a,button').forEach(el=>{
-  el.addEventListener('mouseenter',()=>{CUR.style.transform='translate(-50%,-50%) scale(2.5)';CUR.style.background='var(--c3)';CURR.style.opacity='0'});
-  el.addEventListener('mouseleave',()=>{CUR.style.transform='translate(-50%,-50%) scale(1)';CUR.style.background='var(--c1)';CURR.style.opacity='1'});
+/* ══════════════════════════════════════
+   COLOR BENDS — Three.js WebGL shader
+   Direct port of the React component
+══════════════════════════════════════ */
+const FRAG = `
+
+#define MAX_COLORS 8
+uniform vec2 uCanvas;
+uniform float uTime;
+uniform float uSpeed;
+uniform vec2 uRot;
+uniform int uColorCount;
+uniform vec3 uColors[MAX_COLORS];
+uniform int uTransparent;
+uniform float uScale;
+uniform float uFrequency;
+uniform float uWarpStrength;
+uniform vec2 uPointer;
+uniform float uMouseInfluence;
+uniform float uParallax;
+uniform float uNoise;
+varying vec2 vUv;
+void main() {
+  float t = uTime * uSpeed;
+  vec2 p = vUv * 2.0 - 1.0;
+  p += uPointer * uParallax * 0.1;
+  vec2 rp = vec2(p.x * uRot.x - p.y * uRot.y, p.x * uRot.y + p.y * uRot.x);
+  vec2 q = vec2(rp.x * (uCanvas.x / uCanvas.y), rp.y);
+  q /= max(uScale, 0.0001);
+  q /= 0.5 + 0.2 * dot(q, q);
+  q += 0.2 * cos(t) - 7.56;
+  vec2 toward = (uPointer - rp);
+  q += toward * uMouseInfluence * 0.2;
+  vec3 col = vec3(0.0);
+  float a = 1.0;
+  if (uColorCount > 0) {
+    vec2 s = q;
+    vec3 sumCol = vec3(0.0);
+    float cover = 0.0;
+    for (int i = 0; i < MAX_COLORS; ++i) {
+      if (i >= uColorCount) break;
+      s -= 0.01;
+      vec2 r = sin(1.5 * (s.yx * uFrequency) + 2.0 * cos(s * uFrequency));
+      float m0 = length(r + sin(5.0 * r.y * uFrequency - 3.0 * t + float(i)) / 4.0);
+      float kBelow = clamp(uWarpStrength, 0.0, 1.0);
+      float kMix = pow(kBelow, 0.3);
+      float gain = 1.0 + max(uWarpStrength - 1.0, 0.0);
+      vec2 disp = (r - s) * kBelow;
+      vec2 warped = s + disp * gain;
+      float m1 = length(warped + sin(5.0 * warped.y * uFrequency - 3.0 * t + float(i)) / 4.0);
+      float m = mix(m0, m1, kMix);
+      float w = 1.0 - exp(-6.0 / exp(6.0 * m));
+      sumCol += uColors[i] * w;
+      cover = max(cover, w);
+    }
+    col = clamp(sumCol, 0.0, 1.0);
+    a = uTransparent > 0 ? cover : 1.0;
+  }
+  if (uNoise > 0.0001) {
+    float n = fract(sin(dot(gl_FragCoord.xy + vec2(uTime), vec2(12.9898, 78.233))) * 43758.5453123);
+    col += (n - 0.5) * uNoise;
+    col = clamp(col, 0.0, 1.0);
+  }
+  vec3 rgb = (uTransparent > 0) ? col * a : col;
+  gl_FragColor = vec4(rgb, a);
+}
+
+`;
+const VERT = `
+varying vec2 vUv;
+void main(){vUv=uv;gl_Position=vec4(position,1.0);}
+`;
+
+function createColorBends(canvas, opts) {
+  const {
+    colors = ['#ff5c7a','#8a5cff','#00ffd1'],
+    rotation = 0, speed = 0.2, scale = 1,
+    frequency = 1, warpStrength = 1,
+    mouseInfluence = 1, parallax = 0.5,
+    noise = 0.1, transparent = true, autoRotate = 0
+  } = opts;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+  const geo = new THREE.PlaneGeometry(2,2);
+
+  const MAX_COLORS = 8;
+  const uColorsArray = Array.from({length:MAX_COLORS},()=>new THREE.Vector3(0,0,0));
+
+  function hexToVec3(hex) {
+    const h = hex.replace('#','').trim();
+    const v = h.length===3
+      ? [parseInt(h[0]+h[0],16),parseInt(h[1]+h[1],16),parseInt(h[2]+h[2],16)]
+      : [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];
+    return new THREE.Vector3(v[0]/255,v[1]/255,v[2]/255);
+  }
+
+  const arr = colors.filter(Boolean).slice(0,MAX_COLORS).map(hexToVec3);
+  arr.forEach((v,i)=>uColorsArray[i].copy(v));
+
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: VERT, fragmentShader: FRAG,
+    uniforms: {
+      uCanvas:       {value: new THREE.Vector2(1,1)},
+      uTime:         {value: 0},
+      uSpeed:        {value: speed},
+      uRot:          {value: new THREE.Vector2(1,0)},
+      uColorCount:   {value: arr.length},
+      uColors:       {value: uColorsArray},
+      uTransparent:  {value: transparent?1:0},
+      uScale:        {value: scale},
+      uFrequency:    {value: frequency},
+      uWarpStrength: {value: warpStrength},
+      uPointer:      {value: new THREE.Vector2(0,0)},
+      uMouseInfluence:{value: mouseInfluence},
+      uParallax:     {value: parallax},
+      uNoise:        {value: noise}
+    },
+    premultipliedAlpha: true,
+    transparent: true
+  });
+
+  scene.add(new THREE.Mesh(geo,mat));
+
+  const renderer = new THREE.WebGLRenderer({canvas, antialias:false, alpha:true, powerPreference:'high-performance'});
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+  renderer.setClearColor(0x000000, transparent?0:1);
+
+  function resize() {
+    const w = canvas.clientWidth||window.innerWidth;
+    const h = canvas.clientHeight||window.innerHeight;
+    renderer.setSize(w,h,false);
+    mat.uniforms.uCanvas.value.set(w,h);
+  }
+  resize();
+  if('ResizeObserver' in window) {
+    const ro = new ResizeObserver(resize);
+    ro.observe(canvas.parentElement||canvas);
+  }
+
+  // Mouse tracking
+  const ptrTarget = new THREE.Vector2(0,0);
+  const ptrCurrent = new THREE.Vector2(0,0);
+  const container = canvas.parentElement || document.body;
+  container.addEventListener('pointermove', e => {
+    const r = container.getBoundingClientRect();
+    const x = ((e.clientX-r.left)/(r.width||1))*2-1;
+    const y = -(((e.clientY-r.top)/(r.height||1))*2-1);
+    ptrTarget.set(x,y);
+  });
+
+  const clock = new THREE.Clock();
+  let rotAngle = rotation;
+  function loop() {
+    const dt = clock.getDelta();
+    const elapsed = clock.elapsedTime;
+    mat.uniforms.uTime.value = elapsed;
+    rotAngle += autoRotate * dt;
+    const rad = (rotAngle * Math.PI) / 180;
+    mat.uniforms.uRot.value.set(Math.cos(rad), Math.sin(rad));
+    ptrCurrent.lerp(ptrTarget, Math.min(1, dt*8));
+    mat.uniforms.uPointer.value.copy(ptrCurrent);
+    renderer.render(scene, camera);
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+}
+
+// — Hero ColorBends: warm pink/violet/teal, low opacity via CSS
+createColorBends(document.getElementById('cb-canvas'), {
+  colors: ['#ff5c7a','#8a5cff','#00ffd1'],
+  rotation: 0, speed: 0.18, scale: 1, frequency: 1,
+  warpStrength: 1, mouseInfluence: 1, parallax: 0.5,
+  noise: 0.08, transparent: true, autoRotate: 0
 });
 
-/* ═══════════════════════════════════════════
+// — Contact ColorBends: cooler palette
+createColorBends(document.getElementById('cb-contact'), {
+  colors: ['#00ffd1','#8a5cff','#ff5c7a'],
+  rotation: 45, speed: 0.12, scale: 1.2, frequency: 0.8,
+  warpStrength: 1.2, mouseInfluence: 0.8, parallax: 0.3,
+  noise: 0.06, transparent: true, autoRotate: 3
+});
+
+/* ══════════════════════════════════════
+   CURSOR
+══════════════════════════════════════ */
+const CUR=document.getElementById('CUR'),CURF=document.getElementById('CUR_F');
+let mx=0,my=0,fx=0,fy=0;
+document.addEventListener('mousemove',e=>{mx=e.clientX;my=e.clientY;CUR.style.left=mx+'px';CUR.style.top=my+'px'});
+(function animF(){fx+=(mx-fx)*.1;fy+=(my-fy)*.1;CURF.style.left=fx+'px';CURF.style.top=fy+'px';requestAnimationFrame(animF)})();
+
+/* ══════════════════════════════════════
    SCROLL PROGRESS + NAV BLUR
-═══════════════════════════════════════════ */
-const pbar=document.getElementById('pbar');
-const tnav=document.getElementById('topnav');
+══════════════════════════════════════ */
+const pbar=document.getElementById('pbar'),tnav=document.getElementById('tnav');
 window.addEventListener('scroll',()=>{
-  const pct=window.scrollY/(document.body.scrollHeight-window.innerHeight)*100;
-  pbar.style.width=pct+'%';
+  const p=window.scrollY/(document.body.scrollHeight-window.innerHeight)*100;
+  pbar.style.width=p+'%';
   tnav.classList.toggle('scrolled',window.scrollY>60);
 },{passive:true});
 
-/* ═══════════════════════════════════════════
-   HERO CANVAS — MATRIX DATA RAIN + PARTICLES
-═══════════════════════════════════════════ */
-const hc=document.getElementById('hero-c');
-const hx=hc.getContext('2d');
-let HW,HH;
-function resizeH(){HW=hc.width=window.innerWidth;HH=hc.height=window.innerHeight}
-resizeH();window.addEventListener('resize',resizeH);
-
-const AI_CHARS='01∑∇∂αβγδεζλμπστωABCDEFMLAI→←∫∮'.split('');
-const COL_W=22;
-const cols=[];
-function initCols(){cols.length=0;for(let x=0;x<Math.floor(HW/COL_W);x++)cols.push({y:Math.random()*-80,speed:Math.random()*.4+.2,bright:Math.random()>.88})}
-initCols();window.addEventListener('resize',initCols);
-
-const PARTS=Array.from({length:70},()=>({
-  x:Math.random()*window.innerWidth,y:Math.random()*window.innerHeight,
-  vx:(Math.random()-.5)*.35,vy:(Math.random()-.5)*.35,
-  r:Math.random()*1.2+.3,
-  c:Math.random()>.55?'0,255,225':Math.random()>.5?'94,43,255':'255,37,82',
-  a:Math.random()*.4+.08
-}));
-
-let hmx=window.innerWidth/2,hmy=window.innerHeight/2;
-document.addEventListener('mousemove',e=>{hmx=e.clientX;hmy=e.clientY});
-
-function drawHero(){
-  // Slow fade for trail effect
-  hx.fillStyle='rgba(2,4,9,.14)';
-  hx.fillRect(0,0,HW,HH);
-
-  // Matrix rain
-  hx.font=`12px 'JetBrains Mono',monospace`;
-  cols.forEach((col,i)=>{
-    const ch=AI_CHARS[Math.floor(Math.random()*AI_CHARS.length)];
-    const x=i*COL_W, y=col.y*14;
-    const alpha=col.bright?Math.random()*.25+.08:Math.random()*.12+.03;
-    hx.fillStyle=`rgba(0,255,225,${alpha})`;
-    hx.fillText(ch,x,y);
-    if(y>HH&&Math.random()>.97)col.y=0;
-    col.y+=col.speed;
-  });
-
-  // Particles
-  PARTS.forEach(p=>{
-    p.x+=p.vx;p.y+=p.vy;
-    if(p.x<0||p.x>HW)p.vx*=-1;
-    if(p.y<0||p.y>HH)p.vy*=-1;
-    hx.beginPath();hx.arc(p.x,p.y,p.r,0,Math.PI*2);
-    hx.fillStyle=`rgba(${p.c},${p.a})`;hx.fill();
-    const dx=p.x-hmx,dy=p.y-hmy,d=Math.sqrt(dx*dx+dy*dy);
-    if(d<190){
-      hx.beginPath();hx.moveTo(p.x,p.y);hx.lineTo(hmx,hmy);
-      hx.strokeStyle=`rgba(0,255,225,${.18*(1-d/190)})`;
-      hx.lineWidth=.7;hx.stroke();
-    }
-  });
-  // Mouse glow
-  const mg=hx.createRadialGradient(hmx,hmy,0,hmx,hmy,80);
-  mg.addColorStop(0,'rgba(0,255,225,.06)');mg.addColorStop(1,'transparent');
-  hx.fillStyle=mg;hx.fillRect(hmx-80,hmy-80,160,160);
-
-  requestAnimationFrame(drawHero);
+/* ══════════════════════════════════════
+   COUNT UP
+══════════════════════════════════════ */
+function countUp(el){
+  const target=+el.dataset.target, suffix=el.dataset.suffix||'';
+  let cur=0;const step=target/60;
+  const t=setInterval(()=>{
+    cur=Math.min(cur+step,target);
+    el.textContent=Math.floor(cur)+suffix;
+    if(cur>=target){el.textContent=target+suffix;clearInterval(t)}
+  },25);
 }
-drawHero();
+const cntObs=new IntersectionObserver(entries=>{entries.forEach(e=>{if(e.isIntersecting){countUp(e.target);cntObs.unobserve(e.target)}})},{threshold:.5});
+document.querySelectorAll('.counter').forEach(el=>cntObs.observe(el));
 
-/* ═══════════════════════════════════════════
-   NEURAL NET CANVAS
-═══════════════════════════════════════════ */
-const nnC=document.getElementById('nn-c');
-const nnX=nnC.getContext('2d');
-let nnT=0;
-
-const LAYERS=[
-  {label:'INPUT',nodes:4,cols:['#00ffe1','#00ffe1','#00ffe1','#00ffe1'],names:['Token 1','Token 2','Token 3','Token N']},
-  {label:'EMBEDDING',nodes:5,cols:Array(5).fill('#5e2bff'),names:['Dim 1','Dim 2','Dim 3','Dim 4','Dim 5']},
-  {label:'ATTENTION',nodes:7,cols:Array(7).fill('#00ffe1'),names:['Head 1','Head 2','Head 3','Head 4','Head 5','Head 6','Head 7']},
-  {label:'FEED FWD',nodes:7,cols:Array(7).fill('#5e2bff'),names:[]},
-  {label:'HIDDEN',nodes:5,cols:Array(5).fill('#ff2552'),names:[]},
-  {label:'OUTPUT',nodes:3,cols:['#ffc700','#ffc700','#ffc700'],names:['NLP','CV','MLOps']},
-];
-
-let nnNodes=[];
-function buildNN(){
-  nnC.width=nnC.offsetWidth||1200;
-  nnC.height=280;
-  const W=nnC.width,H=nnC.height;
-  nnNodes=LAYERS.map((layer,li)=>{
-    const x=W/(LAYERS.length+1)*(li+1);
-    return layer.nodes===0?[]:(()=>{
-      const nodeH=H/(layer.nodes+1);
-      return Array.from({length:layer.nodes},(_,ni)=>({
-        x,y:nodeH*(ni+1),color:layer.cols[ni]||'#00ffe1',name:layer.names[ni]||''
-      }));
-    })();
-  });
-}
-
-function drawNN(){
-  if(!nnC.offsetWidth)return;
-  if(!nnNodes.length)buildNN();
-  const W=nnC.width,H=nnC.height;
-  nnX.clearRect(0,0,W,H);
-
-  // Connections
-  for(let li=0;li<nnNodes.length-1;li++){
-    nnNodes[li].forEach(fn=>{
-      nnNodes[li+1].forEach(tn=>{
-        const pulse=(Math.sin(nnT*.035+(fn.y+tn.x)*.009)+1)*.5;
-        nnX.beginPath();nnX.moveTo(fn.x,fn.y);nnX.lineTo(tn.x,tn.y);
-        nnX.strokeStyle=`rgba(0,255,225,${.025+pulse*.06})`;
-        nnX.lineWidth=.6;nnX.stroke();
-      });
-    });
-  }
-
-  // Layer labels
-  LAYERS.forEach((layer,li)=>{
-    if(!nnNodes[li].length)return;
-    const x=nnNodes[li][0].x;
-    nnX.fillStyle=li===0?'rgba(0,255,225,.5)':li===5?'rgba(255,199,0,.5)':'rgba(255,255,255,.2)';
-    nnX.font=`bold 8px 'JetBrains Mono',monospace`;nnX.textAlign='center';
-    nnX.fillText(layer.label,x,H-6);
-  });
-
-  // Traveling signals
-  for(let li=0;li<nnNodes.length-1;li++){
-    const fromL=nnNodes[li],toL=nnNodes[li+1];
-    if(!fromL.length||!toL.length)continue;
-    const fi=Math.floor(nnT*.18+li*3.7)%fromL.length;
-    const ti=Math.floor(nnT*.14+li*2.3)%toL.length;
-    const prog=((nnT*.025+li*.55)%1);
-    const sx=fromL[fi].x+(toL[ti].x-fromL[fi].x)*prog;
-    const sy=fromL[fi].y+(toL[ti].y-fromL[fi].y)*prog;
-    const sg=nnX.createRadialGradient(sx,sy,0,sx,sy,7);
-    sg.addColorStop(0,'rgba(255,255,255,.9)');sg.addColorStop(.4,fromL[fi].color+'99');sg.addColorStop(1,'transparent');
-    nnX.beginPath();nnX.arc(sx,sy,7,0,Math.PI*2);nnX.fillStyle=sg;nnX.fill();
-    nnX.beginPath();nnX.arc(sx,sy,2.5,0,Math.PI*2);nnX.fillStyle='#fff';nnX.fill();
-  }
-
-  // Nodes
-  nnNodes.forEach((layer)=>{
-    layer.forEach(n=>{
-      const pulse=(Math.sin(nnT*.07+n.x*.015+n.y*.008)+1)*.5;
-      const r=4+pulse*2.5;
-      // glow
-      const g=nnX.createRadialGradient(n.x,n.y,0,n.x,n.y,r*3.5);
-      g.addColorStop(0,n.color+'55');g.addColorStop(1,'transparent');
-      nnX.beginPath();nnX.arc(n.x,n.y,r*3.5,0,Math.PI*2);nnX.fillStyle=g;nnX.fill();
-      // core
-      nnX.beginPath();nnX.arc(n.x,n.y,r,0,Math.PI*2);nnX.fillStyle=n.color;nnX.fill();
-      // label
-      if(n.name&&W>500){
-        nnX.fillStyle='rgba(255,255,255,.35)';
-        nnX.font=`8px 'JetBrains Mono',monospace`;nnX.textAlign='center';
-        nnX.fillText(n.name,n.x,n.y-r-5);
-      }
-    });
-  });
-
-  nnT++;requestAnimationFrame(drawNN);
-}
-window.addEventListener('resize',buildNN);
-setTimeout(()=>{buildNN();drawNN();},200);
-
-/* ═══════════════════════════════════════════
-   CONTACT CANVAS — OSCILLATING WAVEFORMS
-═══════════════════════════════════════════ */
-const cc=document.getElementById('contact-c');
-const cx=cc.getContext('2d');
-let wt=0;
-function resizeContact(){cc.width=cc.offsetWidth||window.innerWidth;cc.height=cc.offsetHeight||window.innerHeight}
-resizeContact();window.addEventListener('resize',resizeContact);
-function drawContact(){
-  const W=cc.offsetWidth,H=cc.offsetHeight;
-  if(cc.width!==W||cc.height!==H){cc.width=W;cc.height=H;}
-  cx.clearRect(0,0,W,H);
-  [[0,255,225,.1],[94,43,255,.07],[255,37,82,.05]].forEach(([r,g,b,a],wi)=>{
-    cx.beginPath();
-    for(let x=0;x<=W;x++){
-      const y=H/2+Math.sin((x*.006)+(wt*.02)+(wi*1.3))*70+
-                    Math.sin((x*.018)+(wt*.04)+(wi*.9))*30+
-                    Math.sin((x*.04)+(wt*.015))*15;
-      x===0?cx.moveTo(x,y):cx.lineTo(x,y);
-    }
-    cx.strokeStyle=`rgba(${r},${g},${b},${a})`;cx.lineWidth=1.5;cx.stroke();
-  });
-  wt++;requestAnimationFrame(drawContact);
-}
-drawContact();
-
-/* ═══════════════════════════════════════════
+/* ══════════════════════════════════════
    SCROLL REVEAL
-═══════════════════════════════════════════ */
-const revObs=new IntersectionObserver(entries=>{
-  entries.forEach(e=>{if(e.isIntersecting)e.target.classList.add('in')});
-},{threshold:.1,rootMargin:'0px 0px -60px 0px'});
+══════════════════════════════════════ */
+const revObs=new IntersectionObserver(entries=>{entries.forEach(e=>{if(e.isIntersecting)e.target.classList.add('in')})},{threshold:.08,rootMargin:'0px 0px -50px 0px'});
 document.querySelectorAll('.reveal').forEach(el=>revObs.observe(el));
 
-// Cinematic word-by-word
-const wordObs=new IntersectionObserver(entries=>{
-  entries.forEach(e=>{
-    if(e.isIntersecting){
-      e.target.querySelectorAll('.cine-word').forEach((w,i)=>{
-        setTimeout(()=>w.classList.add('in'),i*120);
-      });
-    }
+/* ══════════════════════════════════════
+   EXP CARD top-bar
+══════════════════════════════════════ */
+const cObs=new IntersectionObserver(entries=>{entries.forEach(e=>{if(e.isIntersecting)e.target.classList.add('in')})},{threshold:.15});
+document.querySelectorAll('.exp-card').forEach(el=>cObs.observe(el));
+
+/* ══════════════════════════════════════
+   TILT CARDS
+══════════════════════════════════════ */
+document.querySelectorAll('.tilt-card').forEach(card=>{
+  card.addEventListener('mousemove',e=>{
+    const r=card.getBoundingClientRect();
+    const x=(e.clientX-r.left)/r.width-.5;
+    const y=(e.clientY-r.top)/r.height-.5;
+    card.style.transform=`perspective(600px) rotateY(${x*12}deg) rotateX(${-y*12}deg) translateZ(6px)`;
   });
-},{threshold:.2});
-document.querySelectorAll('.cine-block').forEach(el=>wordObs.observe(el));
+  card.addEventListener('mouseleave',()=>{card.style.transform=''});
+});
 
-/* ═══════════════════════════════════════════
-   EXP CARDS — top bar trigger
-═══════════════════════════════════════════ */
-const cardObs=new IntersectionObserver(entries=>{
-  entries.forEach(e=>{if(e.isIntersecting)e.target.classList.add('in')});
-},{threshold:.15});
-document.querySelectorAll('.exp-card').forEach(el=>cardObs.observe(el));
+/* ══════════════════════════════════════
+   MAGNETIC BUTTONS
+══════════════════════════════════════ */
+document.querySelectorAll('.mag-btn').forEach(btn=>{
+  btn.addEventListener('mousemove',e=>{
+    const r=btn.getBoundingClientRect();
+    const dx=(e.clientX-r.left-r.width/2)*.28;
+    const dy=(e.clientY-r.top-r.height/2)*.28;
+    btn.style.transform=`translate(${dx}px,${dy}px)`;
+  });
+  btn.addEventListener('mouseleave',()=>{btn.style.transform=''});
+});
 
-/* ═══════════════════════════════════════════
+/* ══════════════════════════════════════
    SIDE NAV + TOP NAV ACTIVE
-═══════════════════════════════════════════ */
+══════════════════════════════════════ */
 const sideItems=document.querySelectorAll('.si');
-const topLinks=document.querySelectorAll('.nlinks a');
-const secObs=new IntersectionObserver(entries=>{
+const topLinks=document.querySelectorAll('.nls a');
+const snObs=new IntersectionObserver(entries=>{
   entries.forEach(entry=>{
     if(entry.isIntersecting){
       const id=entry.target.id;
@@ -261,4 +268,4 @@ const secObs=new IntersectionObserver(entries=>{
     }
   });
 },{threshold:.35});
-document.querySelectorAll('section[id]').forEach(s=>secObs.observe(s));
+document.querySelectorAll('section[id]').forEach(s=>snObs.observe(s));
